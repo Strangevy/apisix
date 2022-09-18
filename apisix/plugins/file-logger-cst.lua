@@ -1,6 +1,7 @@
 local log_util = require("apisix.utils.log-util")
 local core     = require("apisix.core")
 local lrucache = require("resty.lrucache")
+local expr     = require("resty.expr.v1")
 local ngx      = ngx
 local io_open  = io.open
 
@@ -12,14 +13,16 @@ local schema = {
     type = "object",
     properties = {
         path = {
+            description = "Path of save file log",
             type = "string"
         },
         print_count_of_req = {
+            description = "Limit the number of prints in the same worker",
             type = "number",
             minimum = 1
         },
         match = {
-            description = "like traffic-split rules.match.vars: "
+            description = "Like traffic-split rules.match.vars: "
                 .. " https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/#%E5%B1%9E%E6%80%A7",
             type = "array"
         },
@@ -37,7 +40,15 @@ local _M = {
 
 
 function _M.check_schema(conf)
-    return core.schema.check(schema, conf)
+    local ok, err = core.schema.check(schema, conf)
+
+    if not ok then
+        return false, err
+    end
+    local ok, err = expr.new(conf.match)
+    if not ok then
+        return false, "failed to validate the 'match' expression: " .. err
+    end
 end
 
 local function write_file_data(conf, log_message)
@@ -74,7 +85,30 @@ local function print(conf)
     write_file_data(conf, entry)
 end
 
+
+local function check_match(match)
+    if not match then
+        return true
+    end
+
+    local expr, err = expr.new(match)
+    if err then
+        core.log.error("match expression does not match: ", err)
+        return false, err
+    end
+
+    if not expr:eval(match) then
+        return false, "not match"
+    end
+
+    return true
+end
+
 function _M.log(conf, ctx)
+    local is_match = check_match(conf.match)
+    if not is_match then
+        return
+    end
     if not conf.print_count_of_req or c:get(lru_key) % conf.print_count_of_req == 0 then
         c:set(lru_key, c:get(lru_key) + 1)
         print(conf)
