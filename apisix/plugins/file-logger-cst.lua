@@ -1,9 +1,13 @@
-local log_util = require("apisix.utils.log-util")
-local core     = require("apisix.core")
-local lrucache = require("resty.lrucache")
-local expr     = require("resty.expr.v1")
-local ngx      = ngx
-local io_open  = io.open
+local log_util          = require("apisix.utils.log-util")
+local core              = require("apisix.core")
+local lrucache          = require("resty.lrucache")
+local expr              = require("resty.expr.v1")
+local pb                = require("pb")
+local proto             = require("apisix.plugins.grpc-transcode.proto")
+local ngx               = ngx
+local io_open           = io.open
+local req_get_body_data = ngx.req.get_body_data
+
 
 
 local plugin_name = "file-logger-cst"
@@ -26,6 +30,15 @@ local schema = {
                 .. " https://apisix.apache.org/zh/docs/apisix/plugins/traffic-split/#%E5%B1%9E%E6%80%A7",
             type = "array"
         },
+        proto_id = {
+            type = "string"
+        },
+        request_type = {
+            type = "string"
+        },
+        response_type = {
+            type = "string"
+        },
     },
     required = { "path" }
 }
@@ -41,14 +54,18 @@ local _M = {
 
 function _M.check_schema(conf)
     local ok, err = core.schema.check(schema, conf)
-
     if not ok then
         return false, err
     end
-    local ok, err = expr.new(conf.match)
-    if not ok then
-        return false, "failed to validate the 'match' expression: " .. err
+
+    if conf.match then
+        local ok, err = expr.new(conf.match)
+        if not ok then
+            return false, "failed to validate the 'match' expression: " .. err
+        end
     end
+
+    return true
 end
 
 local function write_file_data(conf, log_message)
@@ -85,6 +102,24 @@ local function print(conf)
     write_file_data(conf, entry)
 end
 
+function _M.init()
+    proto.init()
+end
+
+local function print_proto(conf)
+    local proto_obj, err = proto.fetch(conf.roto_id)
+    if not proto_obj then
+        core.log.error("proto load error: ", err)
+        return
+    end
+
+    local body = req_get_body_data()
+
+    pb.state(proto_obj.pb_state)
+
+    local decode = pb.decode(conf.request_type, body)
+    core.log.error(core.json.encode(decode))
+end
 
 local function check_match(match)
     if not match then
@@ -105,6 +140,8 @@ local function check_match(match)
 end
 
 function _M.log(conf, ctx)
+    -- demo protocol bufferx
+    -- print_proto(conf)
     local is_match = check_match(conf.match)
     if not is_match then
         return
